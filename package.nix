@@ -57,97 +57,196 @@ let
     "opencode-linux-x64" = "sha256-FEybYhq7CD/Yt67ELmGfqkE+EG5sNQWD9M9yTnCRr78=";
   };
 
-in
-pkgs.stdenv.mkDerivation {
-  pname = "opencode";
-  inherit version;
-
-  # Source tarballs
-  src = fetchNpmPackage {
-    pname = "opencode-ai";
+  # Create the base package first
+  basePackage = pkgs.stdenv.mkDerivation {
+    pname = "opencode-base";
     inherit version;
-    hash = packageHashes."opencode-ai";
-  };
 
-  # Platform-specific binary
-  platformSrc = fetchNpmPackage {
-    pname = platformPackageName;
-    inherit version;
-    hash =
-      packageHashes.${platformPackageName} or (throw "Hash for ${platformPackageName} not defined");
-  };
+    # Source tarballs
+    src = fetchNpmPackage {
+      pname = "opencode-ai";
+      inherit version;
+      hash = packageHashes."opencode-ai";
+    };
 
-  # Dependencies
-  nativeBuildInputs = with pkgs; [
-    makeWrapper
-    autoPatchelfHook
-  ];
+    # Platform-specific binary
+    platformSrc = fetchNpmPackage {
+      pname = platformPackageName;
+      inherit version;
+      hash =
+        packageHashes.${platformPackageName} or (throw "Hash for ${platformPackageName} not defined");
+    };
 
-  buildInputs = with pkgs; [
-    stdenv.cc.cc.lib
-    glibc
-    zlib
-    openssl
-    nodejs
-  ];
+    # Dependencies
+    nativeBuildInputs = with pkgs; [
+      autoPatchelfHook
+    ];
 
-  # Environment variables
-  passthru.exePath = "/bin/opencode";
+    buildInputs = with pkgs; [
+      stdenv.cc.cc.lib
+      glibc
+      zlib
+      openssl
+    ];
 
-  # Unpack the sources
-  unpackPhase = ''
-    tar -xzf $src
-    mkdir -p platform
-    tar -xzf $platformSrc -C platform
-  '';
-
-  # Installation
-  installPhase = ''
-    # Create directories
-    mkdir -p $out/bin
-    mkdir -p $out/lib/node_modules/opencode-ai
-    mkdir -p $out/lib/node_modules/${platformPackageName}
-
-    # Copy main package
-    cp -r package/* $out/lib/node_modules/opencode-ai/
-
-    # Copy platform-specific package
-    cp -r platform/package/* $out/lib/node_modules/${platformPackageName}/
-
-    # Make the binary executable
-    chmod +x $out/lib/node_modules/${platformPackageName}/bin/opencode
-
-    # Create symlink for the binary
-    ln -s $out/lib/node_modules/${platformPackageName}/bin/opencode $out/bin/opencode
-  '';
-
-  # Fix dynamic linking after installation
-  fixupPhase = ''
-    runHook preFixup
-
-    # autoPatchelfHook will automatically patch the binary
-    # but we need to make sure it can find our binary
-    if [ -f "$out/lib/node_modules/${platformPackageName}/bin/opencode" ]; then
-      echo "Found OpenCode binary, autoPatchelfHook will patch it"
-    else
-      echo "ERROR: OpenCode binary not found at expected location"
-      exit 1
-    fi
-
-    runHook postFixup
-  '';
-
-  meta = with pkgs.lib; {
-    description = "A powerful terminal-based AI assistant for developers";
-    homepage = "https://github.com/sst/opencode";
-    license = licenses.mit;
-    platforms = [ system ];
-    maintainers = [ "aodhan.hayter@gmail.com" ];
-    changelog = "https://github.com/sst/opencode/releases";
-    longDescription = ''
-      OpenCode is an open-source AI developer tool created by SST (Serverless Stack).
-      It acts as a terminal-based assistant that helps with coding tasks, debugging,
-      and project management directly in your terminal.
+    # Unpack the sources
+    unpackPhase = ''
+      tar -xzf $src
+      mkdir -p platform
+      tar -xzf $platformSrc -C platform
     '';
+
+    # Installation
+    installPhase = ''
+      # Create directories
+      mkdir -p $out/lib/node_modules/opencode-ai
+      mkdir -p $out/lib/node_modules/${platformPackageName}
+
+      # Copy main package
+      cp -r package/* $out/lib/node_modules/opencode-ai/
+
+      # Copy platform-specific package
+      cp -r platform/package/* $out/lib/node_modules/${platformPackageName}/
+
+      # Make the binary executable
+      chmod +x $out/lib/node_modules/${platformPackageName}/bin/opencode
+    '';
+
+    # Fix dynamic linking after installation
+    fixupPhase = ''
+      runHook preFixup
+
+      # autoPatchelfHook will automatically patch the binary
+      if [ -f "$out/lib/node_modules/${platformPackageName}/bin/opencode" ]; then
+        echo "Found OpenCode binary, autoPatchelfHook will patch it"
+      else
+        echo "ERROR: OpenCode binary not found at expected location"
+        exit 1
+      fi
+
+      runHook postFixup
+    '';
+
+    meta = with pkgs.lib; {
+      description = "OpenCode base package (internal)";
+      platforms = [ system ];
+    };
   };
-}
+
+in
+# Use different approaches for Linux vs Darwin
+if pkgs.stdenv.isLinux then
+  # Linux: Use FHS environment for NixOS compatibility
+  pkgs.buildFHSEnv {
+    name = "opencode";
+    
+    targetPkgs = pkgs: with pkgs; [
+      basePackage
+      stdenv.cc.cc.lib
+      glibc
+      zlib
+      openssl
+      curl
+      cacert
+      # Additional libraries that might be needed at runtime
+      libgcc
+      ncurses
+      xz
+    ];
+
+    # Set up the runtime environment
+    profile = ''
+      export OPENCODE_ROOT="${basePackage}"
+      export PATH="${basePackage}/lib/node_modules/${platformPackageName}/bin:$PATH"
+    '';
+
+    # Create a wrapper script that launches OpenCode
+    runScript = pkgs.writeScript "opencode-wrapper" ''
+      #!/bin/bash
+      exec "${basePackage}/lib/node_modules/${platformPackageName}/bin/opencode" "$@"
+    '';
+
+    meta = with pkgs.lib; {
+      description = "A powerful terminal-based AI assistant for developers";
+      homepage = "https://github.com/sst/opencode";
+      license = licenses.mit;
+      platforms = [ system ];
+      maintainers = [ "aodhan.hayter@gmail.com" ];
+      changelog = "https://github.com/sst/opencode/releases";
+      longDescription = ''
+        OpenCode is an open-source AI developer tool created by SST (Serverless Stack).
+        It acts as a terminal-based assistant that helps with coding tasks, debugging,
+        and project management directly in your terminal.
+      '';
+    };
+  }
+else
+  # Darwin: Use regular derivation with makeWrapper
+  pkgs.stdenv.mkDerivation {
+    pname = "opencode";
+    inherit version;
+
+    # Source tarballs
+    src = fetchNpmPackage {
+      pname = "opencode-ai";
+      inherit version;
+      hash = packageHashes."opencode-ai";
+    };
+
+    # Platform-specific binary
+    platformSrc = fetchNpmPackage {
+      pname = platformPackageName;
+      inherit version;
+      hash =
+        packageHashes.${platformPackageName} or (throw "Hash for ${platformPackageName} not defined");
+    };
+
+    # Dependencies
+    nativeBuildInputs = with pkgs; [
+      makeWrapper
+    ];
+
+    # Environment variables
+    passthru.exePath = "/bin/opencode";
+
+    # Unpack the sources
+    unpackPhase = ''
+      tar -xzf $src
+      mkdir -p platform
+      tar -xzf $platformSrc -C platform
+    '';
+
+    # Installation
+    installPhase = ''
+      # Create directories
+      mkdir -p $out/bin
+      mkdir -p $out/lib/node_modules/opencode-ai
+      mkdir -p $out/lib/node_modules/${platformPackageName}
+
+      # Copy main package
+      cp -r package/* $out/lib/node_modules/opencode-ai/
+
+      # Copy platform-specific package
+      cp -r platform/package/* $out/lib/node_modules/${platformPackageName}/
+
+      # Make the binary executable
+      chmod +x $out/lib/node_modules/${platformPackageName}/bin/opencode
+
+      # Create symlink for the binary
+      ln -s $out/lib/node_modules/${platformPackageName}/bin/opencode $out/bin/opencode
+    '';
+
+    meta = with pkgs.lib; {
+      description = "A powerful terminal-based AI assistant for developers";
+      homepage = "https://github.com/sst/opencode";
+      license = licenses.mit;
+      platforms = [ system ];
+      maintainers = [ "aodhan.hayter@gmail.com" ];
+      changelog = "https://github.com/sst/opencode/releases";
+      longDescription = ''
+        OpenCode is an open-source AI developer tool created by SST (Serverless Stack).
+        It acts as a terminal-based assistant that helps with coding tasks, debugging,
+        and project management directly in your terminal.
+      '';
+    };
+  }
