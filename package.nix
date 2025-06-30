@@ -80,6 +80,15 @@ pkgs.stdenv.mkDerivation {
   # Dependencies
   nativeBuildInputs = with pkgs; [
     makeWrapper
+    autoPatchelfHook
+  ];
+
+  buildInputs = with pkgs; [
+    stdenv.cc.cc.lib
+    glibc
+    zlib
+    openssl
+    nodejs
   ];
 
   # Environment variables
@@ -105,13 +114,27 @@ pkgs.stdenv.mkDerivation {
     # Copy platform-specific package
     cp -r platform/package/* $out/lib/node_modules/${platformPackageName}/
 
+    # Make the binary executable
+    chmod +x $out/lib/node_modules/${platformPackageName}/bin/opencode
+
     # Create symlink for the binary
     ln -s $out/lib/node_modules/${platformPackageName}/bin/opencode $out/bin/opencode
-    chmod +x $out/bin/opencode
+  '';
 
-    # Create wrapper script
-    wrapProgram $out/bin/opencode \
-      --set OPENCODE_BIN_PATH $out/lib/node_modules/${platformPackageName}/bin/opencode
+  # Fix dynamic linking after installation
+  fixupPhase = ''
+    runHook preFixup
+
+    # autoPatchelfHook will automatically patch the binary
+    # but we need to make sure it can find our binary
+    if [ -f "$out/lib/node_modules/${platformPackageName}/bin/opencode" ]; then
+      echo "Found OpenCode binary, autoPatchelfHook will patch it"
+    else
+      echo "ERROR: OpenCode binary not found at expected location"
+      exit 1
+    fi
+
+    runHook postFixup
   '';
 
   meta = with pkgs.lib; {
